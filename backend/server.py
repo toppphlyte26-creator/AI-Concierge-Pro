@@ -1,95 +1,52 @@
-from fastapi import FastAPI, APIRouter
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-import os
-import logging
-from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Dict, Any
-import uuid
-from datetime import datetime, timezone
+"""FinSight — FastAPI entrypoint."""
+from __future__ import annotations
 
+import logging
+import os
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import AsyncIterator
+
+from dotenv import load_dotenv
+from fastapi import APIRouter, FastAPI
+from starlette.middleware.cors import CORSMiddleware
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / ".env")
 
-# MongoDB connection
-mongo_url: str = os.environ['MONGO_URL']
-client: AsyncIOMotorClient = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+from db import client as mongo_client, ensure_indexes  # noqa: E402
+from routes import router as api_router  # noqa: E402
 
-# Create the main app without a prefix
-app: FastAPI = FastAPI()
-
-# Create a router with the /api prefix
-api_router: APIRouter = APIRouter(prefix="/api")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger: logging.Logger = logging.getLogger("finsight")
 
 
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-
-class StatusCheckCreate(BaseModel):
-    client_name: str
-
-
-# Add your routes to the router instead of directly to app
-@api_router.get("/")
-async def root() -> Dict[str, str]:
-    return {"message": "Hello World"}
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    logger.info("FinSight starting up...")
+    try:
+        await ensure_indexes()
+    except Exception as e:
+        logger.exception("ensure_indexes failed: %s", e)
+    yield
+    logger.info("FinSight shutting down...")
+    mongo_client.close()
 
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate) -> StatusCheck:
-    status_dict: Dict[str, Any] = input.model_dump()
-    status_obj: StatusCheck = StatusCheck(**status_dict)
+app: FastAPI = FastAPI(title="FinSight API", lifespan=lifespan)
 
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc: Dict[str, Any] = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
-
-
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks() -> List[Dict[str, Any]]:
-    # Exclude MongoDB's _id field from the query results
-    status_checks: List[Dict[str, Any]] = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-
-    return status_checks
-
-
-# Include the router in the main app
-app.include_router(api_router)
+# Register API routes under /api
+root_api: APIRouter = APIRouter(prefix="/api")
+root_api.include_router(api_router)
+app.include_router(root_api)
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger: logging.Logger = logging.getLogger(__name__)
-
-
-@app.on_event("shutdown")
-async def shutdown_db_client() -> None:
-    client.close()
