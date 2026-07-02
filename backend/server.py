@@ -38,15 +38,21 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app: FastAPI = FastAPI(title="FinSight API", lifespan=lifespan)
 
-# Register API routes under /api
 root_api: APIRouter = APIRouter(prefix="/api")
 root_api.include_router(api_router)
 app.include_router(root_api)
 
+# CORS: allow credentials so httpOnly cookies are sent by the browser.
+# When credentials are true we must NOT use "*"; we use the explicit origin
+# from CORS_ORIGINS (comma-separated).
+_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
+if not _origins:
+    _origins = ["*"]
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_origins=_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

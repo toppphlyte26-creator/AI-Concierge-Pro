@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { Plus, CalendarClock, Trash2 } from "lucide-react";
@@ -28,6 +28,7 @@ import { api } from "@/lib/api";
 import { formatDate, daysUntil } from "@/lib/format";
 import { Num } from "@/components/Num";
 import { EmptyState } from "@/components/EmptyState";
+import { billDueTone } from "@/lib/ui-status";
 
 const empty = {
   name: "",
@@ -38,28 +39,31 @@ const empty = {
   category: "Bills & Utilities",
 };
 
+function DueBadge({ tone, days }) {
+  if (tone === "overdue") return <Badge className="bg-rose-500/20 text-rose-400 border-rose-400/30">Overdue</Badge>;
+  if (tone === "soon") return <Badge className="bg-amber-500/20 text-amber-400 border-amber-400/30">in {days}d</Badge>;
+  return null;
+}
+
 export default function Bills() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(empty);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const { data } = await api.get("/bills");
       setItems(data);
     } finally { setLoading(false); }
-  };
-  useEffect(() => { load(); }, []);
+  }, []);
+  useEffect(() => { load(); }, [load]);
 
   const add = async () => {
     if (!form.name || !form.amount || !form.next_due_date) return toast.error("All fields required");
     try {
-      await api.post("/bills", {
-        ...form,
-        amount: Number(form.amount),
-      });
+      await api.post("/bills", { ...form, amount: Number(form.amount) });
       setOpen(false); setForm(empty); toast.success("Bill added"); load();
     } catch (e) { toast.error(e?.response?.data?.detail || "Save failed"); }
   };
@@ -146,8 +150,7 @@ export default function Bills() {
           className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4" data-testid="bills-list">
           {items.map(b => {
             const days = daysUntil(b.next_due_date);
-            const soon = days !== null && days <= 7 && days >= 0;
-            const overdue = days !== null && days < 0;
+            const tone = billDueTone(days);
             return (
               <Card key={b.id} className="bg-card/80 border-border card-shadow">
                 <CardContent className="p-5">
@@ -164,8 +167,7 @@ export default function Bills() {
                   <div className="mt-3 num text-2xl font-semibold"><Num value={b.amount} currency={b.currency} /></div>
                   <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
                     <div>Next: {formatDate(b.next_due_date)}</div>
-                    {overdue && <Badge className="bg-rose-500/20 text-rose-400 border-rose-400/30">Overdue</Badge>}
-                    {soon && !overdue && <Badge className="bg-amber-500/20 text-amber-400 border-amber-400/30">in {days}d</Badge>}
+                    <DueBadge tone={tone} days={days} />
                   </div>
                 </CardContent>
               </Card>

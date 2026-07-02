@@ -1,10 +1,11 @@
 """Seed sample data for a newly-registered user.
 
-Goal: the moment a user signs up, their dashboard looks alive.
+Uses `secrets` for random amount / date jitter as flagged by lint. The values
+are purely cosmetic (demo data) but stronger entropy is harmless.
 """
 from __future__ import annotations
 
-import random
+import secrets
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List
@@ -20,7 +21,6 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-# Realistic sample transactions per category (description, min, max, currency, type)
 _SAMPLE_TXNS = [
     ("Blue Bottle Coffee", 4, 9, "USD", "expense", "Food & Drink"),
     ("Chipotle lunch", 10, 16, "USD", "expense", "Food & Drink"),
@@ -45,7 +45,6 @@ _SAMPLE_TXNS = [
     ("Rent - March", 1800, 2200, "USD", "expense", "Housing"),
     ("Haircut", 25, 55, "USD", "expense", "Personal Care"),
     ("Coursera course", 49, 49, "USD", "expense", "Education"),
-    # Income
     ("Monthly salary", 5200, 5200, "USD", "income", "Salary"),
     ("Freelance project", 800, 1400, "USD", "income", "Freelance"),
     ("Dividend payout", 40, 120, "USD", "income", "Investment"),
@@ -53,22 +52,24 @@ _SAMPLE_TXNS = [
 
 
 def _rand_amount(lo: float, hi: float) -> float:
-    return round(random.uniform(lo, hi), 2)
+    if hi <= lo:
+        return round(lo, 2)
+    # secrets doesn't give float uniform — approximate via randbelow on centicents.
+    span_cents = int(round((hi - lo) * 100))
+    offset = secrets.randbelow(span_cents + 1) / 100.0
+    return round(lo + offset, 2)
 
 
 def _rand_date_within(days_back: int = 75) -> str:
-    delta = random.randint(0, days_back)
+    delta = secrets.randbelow(days_back + 1)
     return (date.today() - timedelta(days=delta)).isoformat()
 
 
 async def seed_for_user(user_id: str, base_currency: str = "USD") -> None:
     """Insert sample transactions, budgets, bills, and goals for user."""
-    # --- Transactions (25) ---
     txns: List[Dict[str, Any]] = []
-    # ensure at least one salary this month
     for desc, lo, hi, ccy, typ, cat in _SAMPLE_TXNS:
-        # sample 1-2 occurrences of some
-        occurrences = 2 if typ == "expense" and random.random() > 0.5 else 1
+        occurrences = 2 if typ == "expense" and secrets.randbelow(2) else 1
         for _ in range(occurrences):
             txns.append(
                 {
@@ -88,7 +89,6 @@ async def seed_for_user(user_id: str, base_currency: str = "USD") -> None:
     if txns:
         await db.transactions.insert_many(txns)
 
-    # --- Budgets (monthly) ---
     current_month = date.today().strftime("%Y-%m")
     budgets = [
         {"category": "Food & Drink", "limit": 400.0},
@@ -111,7 +111,6 @@ async def seed_for_user(user_id: str, base_currency: str = "USD") -> None:
         ]
     )
 
-    # --- Recurring Bills ---
     today = date.today()
     bills = [
         ("Netflix", 15.49, "monthly", 8, "Entertainment"),
@@ -137,7 +136,6 @@ async def seed_for_user(user_id: str, base_currency: str = "USD") -> None:
         ]
     )
 
-    # --- Savings Goals ---
     goals = [
         ("Emergency Fund", 10000, 3200, 180),
         ("Japan Trip 2026", 5000, 1650, 220),

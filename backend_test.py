@@ -721,6 +721,251 @@ class FinSightAPITester:
         )
         return success
 
+    # ==================== Cookie Auth Tests ====================
+    def test_cookie_signup(self):
+        """Test POST /api/auth/signup sets httpOnly cookie"""
+        test_email = f"cookietest{datetime.now().strftime('%H%M%S')}@finsight.app"
+        session = requests.Session()
+        
+        self.tests_run += 1
+        print(f"\n🔍 Testing Cookie Auth: POST /api/auth/signup sets finsight_session cookie...")
+        
+        try:
+            response = session.post(
+                f"{self.base_url}/auth/signup",
+                json={"email": test_email, "password": "test1234", "name": "Cookie Test"},
+                timeout=10
+            )
+            
+            if response.status_code != 200:
+                print(f"❌ Failed - Expected 200, got {response.status_code}")
+                self.test_results.append({
+                    "test": "Cookie Auth: Signup sets cookie",
+                    "status": "FAILED",
+                    "reason": f"Expected 200, got {response.status_code}"
+                })
+                return False, None
+            
+            # Check if cookie is set
+            cookie = session.cookies.get('finsight_session')
+            if not cookie:
+                print(f"❌ Failed - Cookie 'finsight_session' not set")
+                self.test_results.append({
+                    "test": "Cookie Auth: Signup sets cookie",
+                    "status": "FAILED",
+                    "reason": "Cookie 'finsight_session' not set"
+                })
+                return False, None
+            
+            print(f"✅ Passed - Cookie 'finsight_session' set")
+            self.tests_passed += 1
+            self.test_results.append({
+                "test": "Cookie Auth: Signup sets cookie",
+                "status": "PASSED"
+            })
+            return True, session
+            
+        except Exception as e:
+            print(f"❌ Failed - Error: {str(e)}")
+            self.test_results.append({
+                "test": "Cookie Auth: Signup sets cookie",
+                "status": "FAILED",
+                "reason": str(e)
+            })
+            return False, None
+
+    def test_cookie_me(self, session):
+        """Test GET /api/auth/me works with cookie (no Authorization header)"""
+        self.tests_run += 1
+        print(f"\n🔍 Testing Cookie Auth: GET /api/auth/me with cookie (no Bearer token)...")
+        
+        try:
+            response = session.get(f"{self.base_url}/auth/me", timeout=10)
+            
+            if response.status_code != 200:
+                print(f"❌ Failed - Expected 200, got {response.status_code}")
+                self.test_results.append({
+                    "test": "Cookie Auth: /auth/me with cookie",
+                    "status": "FAILED",
+                    "reason": f"Expected 200, got {response.status_code}"
+                })
+                return False
+            
+            data = response.json()
+            if not data.get("id") or not data.get("email"):
+                print(f"❌ Failed - Missing user fields")
+                self.test_results.append({
+                    "test": "Cookie Auth: /auth/me with cookie",
+                    "status": "FAILED",
+                    "reason": "Missing user fields"
+                })
+                return False
+            
+            print(f"✅ Passed - User authenticated via cookie: {data.get('email')}")
+            self.tests_passed += 1
+            self.test_results.append({
+                "test": "Cookie Auth: /auth/me with cookie",
+                "status": "PASSED"
+            })
+            return True
+            
+        except Exception as e:
+            print(f"❌ Failed - Error: {str(e)}")
+            self.test_results.append({
+                "test": "Cookie Auth: /auth/me with cookie",
+                "status": "FAILED",
+                "reason": str(e)
+            })
+            return False
+
+    def test_cookie_logout(self, session):
+        """Test POST /api/auth/logout clears cookie"""
+        self.tests_run += 1
+        print(f"\n🔍 Testing Cookie Auth: POST /api/auth/logout clears cookie...")
+        
+        try:
+            response = session.post(f"{self.base_url}/auth/logout", timeout=10)
+            
+            if response.status_code != 200:
+                print(f"❌ Failed - Expected 200, got {response.status_code}")
+                self.test_results.append({
+                    "test": "Cookie Auth: Logout clears cookie",
+                    "status": "FAILED",
+                    "reason": f"Expected 200, got {response.status_code}"
+                })
+                return False
+            
+            data = response.json()
+            if not data.get("ok"):
+                print(f"❌ Failed - Logout did not return ok=True")
+                self.test_results.append({
+                    "test": "Cookie Auth: Logout clears cookie",
+                    "status": "FAILED",
+                    "reason": "Logout did not return ok=True"
+                })
+                return False
+            
+            # Try to access /auth/me after logout (should fail)
+            me_response = session.get(f"{self.base_url}/auth/me", timeout=10)
+            if me_response.status_code == 200:
+                print(f"❌ Failed - Still authenticated after logout")
+                self.test_results.append({
+                    "test": "Cookie Auth: Logout clears cookie",
+                    "status": "FAILED",
+                    "reason": "Still authenticated after logout"
+                })
+                return False
+            
+            print(f"✅ Passed - Cookie cleared, /auth/me returns {me_response.status_code}")
+            self.tests_passed += 1
+            self.test_results.append({
+                "test": "Cookie Auth: Logout clears cookie",
+                "status": "PASSED"
+            })
+            return True
+            
+        except Exception as e:
+            print(f"❌ Failed - Error: {str(e)}")
+            self.test_results.append({
+                "test": "Cookie Auth: Logout clears cookie",
+                "status": "FAILED",
+                "reason": str(e)
+            })
+            return False
+
+    def test_cookie_login(self):
+        """Test POST /api/auth/login sets cookie"""
+        # Create a user first
+        test_email = f"loginc{datetime.now().strftime('%H%M%S')}@finsight.app"
+        test_password = "test1234"
+        
+        requests.post(
+            f"{self.base_url}/auth/signup",
+            json={"email": test_email, "password": test_password},
+            timeout=10
+        )
+        
+        session = requests.Session()
+        self.tests_run += 1
+        print(f"\n🔍 Testing Cookie Auth: POST /api/auth/login sets cookie...")
+        
+        try:
+            response = session.post(
+                f"{self.base_url}/auth/login",
+                json={"email": test_email, "password": test_password},
+                timeout=10
+            )
+            
+            if response.status_code != 200:
+                print(f"❌ Failed - Expected 200, got {response.status_code}")
+                self.test_results.append({
+                    "test": "Cookie Auth: Login sets cookie",
+                    "status": "FAILED",
+                    "reason": f"Expected 200, got {response.status_code}"
+                })
+                return False
+            
+            cookie = session.cookies.get('finsight_session')
+            if not cookie:
+                print(f"❌ Failed - Cookie 'finsight_session' not set")
+                self.test_results.append({
+                    "test": "Cookie Auth: Login sets cookie",
+                    "status": "FAILED",
+                    "reason": "Cookie 'finsight_session' not set"
+                })
+                return False
+            
+            print(f"✅ Passed - Cookie 'finsight_session' set on login")
+            self.tests_passed += 1
+            self.test_results.append({
+                "test": "Cookie Auth: Login sets cookie",
+                "status": "PASSED"
+            })
+            return True
+            
+        except Exception as e:
+            print(f"❌ Failed - Error: {str(e)}")
+            self.test_results.append({
+                "test": "Cookie Auth: Login sets cookie",
+                "status": "FAILED",
+                "reason": str(e)
+            })
+            return False
+
+    def test_unauthenticated_me(self):
+        """Test GET /api/auth/me without auth returns 401"""
+        self.tests_run += 1
+        print(f"\n🔍 Testing Unauthenticated /api/auth/me returns 401...")
+        
+        try:
+            response = requests.get(f"{self.base_url}/auth/me", timeout=10)
+            
+            if response.status_code != 401:
+                print(f"❌ Failed - Expected 401, got {response.status_code}")
+                self.test_results.append({
+                    "test": "Unauthenticated /auth/me returns 401",
+                    "status": "FAILED",
+                    "reason": f"Expected 401, got {response.status_code}"
+                })
+                return False
+            
+            print(f"✅ Passed - Unauthenticated request returns 401")
+            self.tests_passed += 1
+            self.test_results.append({
+                "test": "Unauthenticated /auth/me returns 401",
+                "status": "PASSED"
+            })
+            return True
+            
+        except Exception as e:
+            print(f"❌ Failed - Error: {str(e)}")
+            self.test_results.append({
+                "test": "Unauthenticated /auth/me returns 401",
+                "status": "FAILED",
+                "reason": str(e)
+            })
+            return False
+
 
 def main():
     print("=" * 70)
@@ -813,6 +1058,18 @@ def main():
     print("=" * 70)
     
     tester.test_meta_categories()
+    
+    # ==================== Cookie Auth Tests ====================
+    print("\n" + "=" * 70)
+    print("COOKIE-BASED AUTH TESTS (httpOnly + Secure + SameSite=Lax)")
+    print("=" * 70)
+    
+    tester.test_unauthenticated_me()
+    success, session = tester.test_cookie_signup()
+    if success and session:
+        tester.test_cookie_me(session)
+        tester.test_cookie_logout(session)
+    tester.test_cookie_login()
     
     # ==================== Summary ====================
     print("\n" + "=" * 70)

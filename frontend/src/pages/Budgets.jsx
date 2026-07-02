@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { Plus, PiggyBank, Trash2 } from "lucide-react";
@@ -28,6 +28,14 @@ import { api } from "@/lib/api";
 import { Num } from "@/components/Num";
 import { currentMonth } from "@/lib/format";
 import { EmptyState } from "@/components/EmptyState";
+import { budgetStatus } from "@/lib/ui-status";
+
+function BudgetStatusText({ percent }) {
+  const status = budgetStatus(percent);
+  if (status === "over") return <span className="text-rose-400">Over budget</span>;
+  if (status === "near") return <span className="text-amber-400">Nearing limit</span>;
+  return null;
+}
 
 export default function Budgets() {
   const [month] = useState(currentMonth());
@@ -37,17 +45,16 @@ export default function Budgets() {
   const [category, setCategory] = useState("");
   const [limit, setLimit] = useState("");
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
-      // Reuse dashboard endpoint for computed progress numbers
       const { data } = await api.get("/dashboard");
       setDashboardBudgets(data.budgets || []);
     } finally {
       setLoading(false);
     }
-  };
-  useEffect(() => { load(); }, []);
+  }, []);
+  useEffect(() => { load(); }, [load]);
 
   const add = async () => {
     if (!category || !limit) return toast.error("Category and limit required");
@@ -114,10 +121,10 @@ export default function Budgets() {
         <motion.div initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} transition={{duration:0.3}}
           className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4" data-testid="budgets-grid">
           {dashboardBudgets.map(b => {
-            const over = b.percent > 100;
-            const near = b.percent > 80 && !over;
+            const status = budgetStatus(b.percent);
+            const ring = status === "over" ? "ring-1 ring-destructive/40" : "";
             return (
-              <Card key={b.id} className={"bg-card/80 border-border card-shadow " + (over ? "ring-1 ring-destructive/40" : "")}>
+              <Card key={b.id} className={`bg-card/80 border-border card-shadow ${ring}`}>
                 <CardContent className="p-5">
                   <div className="flex items-start justify-between">
                     <div className="flex items-center gap-2">
@@ -135,8 +142,7 @@ export default function Budgets() {
                   </div>
                   <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
                     <div>{Math.min(b.percent, 999).toFixed(1)}% used</div>
-                    {over && <span className="text-rose-400">Over budget</span>}
-                    {near && <span className="text-amber-400">Nearing limit</span>}
+                    <BudgetStatusText percent={b.percent} />
                   </div>
                   <Progress value={Math.min(b.percent, 100)} className="mt-2" />
                 </CardContent>

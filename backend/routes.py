@@ -9,12 +9,25 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from PIL import Image
 
 from ai_service import extract_receipt, suggest_category
-from auth import create_token, get_current_user, hash_password, verify_password
-from currency import RATES_TO_USD_INVERSE, SUPPORTED, convert
+from auth import (
+    clear_auth_cookie,
+    create_token,
+    get_current_user,
+    hash_password,
+    set_auth_cookie,
+    verify_password,
+)
+from dashboard_helpers import (
+    aggregate_month,
+    build_category_breakdown,
+    build_trend,
+    compute_savings_rate,
+    enrich_budgets,
+)
 from db import db
 from models import (
     ALLOWED_CATEGORIES,
@@ -31,6 +44,7 @@ from models import (
     GoalCreate,
     GoalUpdate,
     ReceiptExtracted,
+    SUPPORTED_CURRENCIES,
     Transaction,
     TransactionCreate,
     TransactionUpdate,
@@ -38,7 +52,6 @@ from models import (
     UserLogin,
     UserPublic,
     UserSignup,
-    SUPPORTED_CURRENCIES,
 )
 from seed import seed_for_user
 
@@ -56,6 +69,12 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _hydrate_user_created_at(user: dict) -> dict:
+    if isinstance(user.get("created_at"), str):
+        user["created_at"] = datetime.fromisoformat(user["created_at"])
+    return user
+
+
 # ------------------------------- Health / Meta --------------------------------
 @router.get("/")
 async def root() -> Dict[str, str]:
@@ -69,7 +88,7 @@ async def meta_categories() -> Dict[str, Any]:
 
 # ---------------------------------- Auth --------------------------------------
 @router.post("/auth/signup", response_model=AuthResponse)
-async def signup(payload: UserSignup) -> AuthResponse:
+async def signup(payload: UserSignup, response: Response) -> AuthResponse:
     existing = await db.users.find_one({"email": payload.email.lower()})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -83,41 +102,41 @@ async def signup(payload: UserSignup) -> AuthResponse:
         "created_at": _now_iso(),
     }
     await db.users.insert_one(doc)
-    # Seed sample data so the app looks alive immediately.
     try:
         await seed_for_user(user_id)
     except Exception as e:
         logger.exception("Seed failed for %s: %s", user_id, e)
 
     token = create_token(user_id)
+    set_auth_cookie(response, token)
     public = {k: v for k, v in doc.items() if k != "password_hash"}
-    public["created_at"] = datetime.fromisoformat(public["created_at"])
-    return AuthResponse(token=token, user=UserPublic(**public))
+    return AuthResponse(token=token, user=UserPublic(**_hydrate_user_created_at(public)))
 
 
 @router.post("/auth/login", response_model=AuthResponse)
-async def login(payload: UserLogin) -> AuthResponse:
+async def login(payload: UserLogin, response: Response) -> AuthResponse:
     user = await db.users.find_one({"email": payload.email.lower()}, {"_id": 0})
     if not user or not verify_password(payload.password, user.get("password_hash", "")):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     token = create_token(user["id"])
+    set_auth_cookie(response, token)
     public = {k: v for k, v in user.items() if k != "password_hash"}
-    if isinstance(public.get("created_at"), str):
-        public["created_at"] = datetime.fromisoformat(public["created_at"])
-    return AuthResponse(token=token, user=UserPublic(**public))
+    return AuthResponse(token=token, user=UserPublic(**_hydrate_user_created_at(public)))
+
+
+@router.post("/auth/logout")
+async def logout(response: Response) -> Dict[str, bool]:
+    clear_auth_cookie(response)
+    return {"ok": True}
 
 
 @router.get("/auth/me", response_model=UserPublic)
 async def me(user: dict = Depends(get_current_user)) -> UserPublic:
-    if isinstance(user.get("created_at"), str):
-        user["created_at"] = datetime.fromisoformat(user["created_at"])
-    return UserPublic(**user)
+    return UserPublic(**_hydrate_user_created_at(user))
 
 
 @router.patch("/auth/me", response_model=UserPublic)
-async def update_me(
-    payload: UpdateSettings, user: dict = Depends(get_current_user)
-) -> UserPublic:
+async def update_me(payload: UpdateSettings, user: dict = Depends(get_current_user)) -> UserPublic:
     updates: Dict[str, Any] = {}
     if payload.name is not None:
         updates["name"] = payload.name
@@ -127,12 +146,8 @@ async def update_me(
         updates["base_currency"] = payload.base_currency
     if updates:
         await db.users.update_one({"id": user["id"]}, {"$set": updates})
-    fresh = await db.users.find_one(
-        {"id": user["id"]}, {"_id": 0, "password_hash": 0}
-    )
-    if isinstance(fresh.get("created_at"), str):
-        fresh["created_at"] = datetime.fromisoformat(fresh["created_at"])
-    return UserPublic(**fresh)
+    fresh = await db.users.find_one({"id": user["id"]}, {"_id": 0, "password_hash": 0})
+    return UserPublic(**_hydrate_user_created_at(fresh))
 
 
 # ------------------------------ Transactions ----------------------------------
@@ -159,19 +174,13 @@ async def list_transactions(
             q["date"]["$gte"] = from_date
         if to_date:
             q["date"]["$lte"] = to_date
-    docs = (
-        await db.transactions.find(q, {"_id": 0}).sort("date", -1).to_list(limit)
-    )
+    docs = await db.transactions.find(q, {"_id": 0}).sort("date", -1).to_list(limit)
     return [Transaction(**d) for d in docs]
 
 
 @router.post("/transactions", response_model=Transaction)
-async def create_transaction(
-    payload: TransactionCreate, user: dict = Depends(get_current_user)
-) -> Transaction:
-    cat = payload.category
-    if not cat:
-        cat = await suggest_category(payload.description)
+async def create_transaction(payload: TransactionCreate, user: dict = Depends(get_current_user)) -> Transaction:
+    cat = payload.category or await suggest_category(payload.description)
     doc = {
         "id": _uuid(),
         "user_id": user["id"],
@@ -190,17 +199,11 @@ async def create_transaction(
 
 
 @router.patch("/transactions/{tx_id}", response_model=Transaction)
-async def update_transaction(
-    tx_id: str,
-    payload: TransactionUpdate,
-    user: dict = Depends(get_current_user),
-) -> Transaction:
+async def update_transaction(tx_id: str, payload: TransactionUpdate, user: dict = Depends(get_current_user)) -> Transaction:
     updates = {k: v for k, v in payload.model_dump().items() if v is not None}
     if not updates:
         raise HTTPException(status_code=400, detail="No changes")
-    result = await db.transactions.update_one(
-        {"id": tx_id, "user_id": user["id"]}, {"$set": updates}
-    )
+    result = await db.transactions.update_one({"id": tx_id, "user_id": user["id"]}, {"$set": updates})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Transaction not found")
     doc = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
@@ -208,9 +211,7 @@ async def update_transaction(
 
 
 @router.delete("/transactions/{tx_id}")
-async def delete_transaction(
-    tx_id: str, user: dict = Depends(get_current_user)
-) -> Dict[str, bool]:
+async def delete_transaction(tx_id: str, user: dict = Depends(get_current_user)) -> Dict[str, bool]:
     result = await db.transactions.delete_one({"id": tx_id, "user_id": user["id"]})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Transaction not found")
@@ -219,23 +220,18 @@ async def delete_transaction(
 
 # ------------------------------ AI helpers ------------------------------------
 @router.post("/ai/categorize")
-async def ai_categorize(
-    payload: CategorySuggestRequest, user: dict = Depends(get_current_user)
-) -> Dict[str, str]:
+async def ai_categorize(payload: CategorySuggestRequest, user: dict = Depends(get_current_user)) -> Dict[str, str]:
     cat = await suggest_category(payload.description)
     return {"category": cat}
 
 
 @router.post("/receipts/scan", response_model=ReceiptExtracted)
-async def scan_receipt(
-    file: UploadFile = File(...), user: dict = Depends(get_current_user)
-) -> ReceiptExtracted:
+async def scan_receipt(file: UploadFile = File(...), user: dict = Depends(get_current_user)) -> ReceiptExtracted:
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="File must be an image")
     raw = await file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="Empty file")
-    # Normalize: transcode to JPEG, resize if huge, RGB.
     try:
         with Image.open(io.BytesIO(raw)) as im:
             im = im.convert("RGB")
@@ -252,10 +248,7 @@ async def scan_receipt(
 
 # --------------------------------- Budgets ------------------------------------
 @router.get("/budgets", response_model=List[Budget])
-async def list_budgets(
-    user: dict = Depends(get_current_user),
-    month: Optional[str] = Query(None),
-) -> List[Budget]:
+async def list_budgets(user: dict = Depends(get_current_user), month: Optional[str] = Query(None)) -> List[Budget]:
     q: Dict[str, Any] = {"user_id": user["id"]}
     if month:
         q["month"] = month
@@ -264,17 +257,10 @@ async def list_budgets(
 
 
 @router.post("/budgets", response_model=Budget)
-async def create_budget(
-    payload: BudgetCreate, user: dict = Depends(get_current_user)
-) -> Budget:
-    # Upsert per (user, category, month)
-    existing = await db.budgets.find_one(
-        {"user_id": user["id"], "category": payload.category, "month": payload.month}
-    )
+async def create_budget(payload: BudgetCreate, user: dict = Depends(get_current_user)) -> Budget:
+    existing = await db.budgets.find_one({"user_id": user["id"], "category": payload.category, "month": payload.month})
     if existing:
-        await db.budgets.update_one(
-            {"id": existing["id"]}, {"$set": {"limit": float(payload.limit)}}
-        )
+        await db.budgets.update_one({"id": existing["id"]}, {"$set": {"limit": float(payload.limit)}})
         existing["limit"] = float(payload.limit)
         existing.pop("_id", None)
         return Budget(**existing)
@@ -291,15 +277,11 @@ async def create_budget(
 
 
 @router.patch("/budgets/{budget_id}", response_model=Budget)
-async def update_budget(
-    budget_id: str, payload: BudgetUpdate, user: dict = Depends(get_current_user)
-) -> Budget:
+async def update_budget(budget_id: str, payload: BudgetUpdate, user: dict = Depends(get_current_user)) -> Budget:
     updates = {k: v for k, v in payload.model_dump().items() if v is not None}
     if not updates:
         raise HTTPException(status_code=400, detail="No changes")
-    result = await db.budgets.update_one(
-        {"id": budget_id, "user_id": user["id"]}, {"$set": updates}
-    )
+    result = await db.budgets.update_one({"id": budget_id, "user_id": user["id"]}, {"$set": updates})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Budget not found")
     doc = await db.budgets.find_one({"id": budget_id}, {"_id": 0})
@@ -307,9 +289,7 @@ async def update_budget(
 
 
 @router.delete("/budgets/{budget_id}")
-async def delete_budget(
-    budget_id: str, user: dict = Depends(get_current_user)
-) -> Dict[str, bool]:
+async def delete_budget(budget_id: str, user: dict = Depends(get_current_user)) -> Dict[str, bool]:
     r = await db.budgets.delete_one({"id": budget_id, "user_id": user["id"]})
     if r.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Budget not found")
@@ -319,18 +299,12 @@ async def delete_budget(
 # ---------------------------------- Bills -------------------------------------
 @router.get("/bills", response_model=List[Bill])
 async def list_bills(user: dict = Depends(get_current_user)) -> List[Bill]:
-    docs = (
-        await db.bills.find({"user_id": user["id"]}, {"_id": 0})
-        .sort("next_due_date", 1)
-        .to_list(500)
-    )
+    docs = await db.bills.find({"user_id": user["id"]}, {"_id": 0}).sort("next_due_date", 1).to_list(500)
     return [Bill(**d) for d in docs]
 
 
 @router.post("/bills", response_model=Bill)
-async def create_bill(
-    payload: BillCreate, user: dict = Depends(get_current_user)
-) -> Bill:
+async def create_bill(payload: BillCreate, user: dict = Depends(get_current_user)) -> Bill:
     doc = {
         "id": _uuid(),
         "user_id": user["id"],
@@ -347,15 +321,11 @@ async def create_bill(
 
 
 @router.patch("/bills/{bill_id}", response_model=Bill)
-async def update_bill(
-    bill_id: str, payload: BillUpdate, user: dict = Depends(get_current_user)
-) -> Bill:
+async def update_bill(bill_id: str, payload: BillUpdate, user: dict = Depends(get_current_user)) -> Bill:
     updates = {k: v for k, v in payload.model_dump().items() if v is not None}
     if not updates:
         raise HTTPException(status_code=400, detail="No changes")
-    r = await db.bills.update_one(
-        {"id": bill_id, "user_id": user["id"]}, {"$set": updates}
-    )
+    r = await db.bills.update_one({"id": bill_id, "user_id": user["id"]}, {"$set": updates})
     if r.matched_count == 0:
         raise HTTPException(status_code=404, detail="Bill not found")
     doc = await db.bills.find_one({"id": bill_id}, {"_id": 0})
@@ -363,9 +333,7 @@ async def update_bill(
 
 
 @router.delete("/bills/{bill_id}")
-async def delete_bill(
-    bill_id: str, user: dict = Depends(get_current_user)
-) -> Dict[str, bool]:
+async def delete_bill(bill_id: str, user: dict = Depends(get_current_user)) -> Dict[str, bool]:
     r = await db.bills.delete_one({"id": bill_id, "user_id": user["id"]})
     if r.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Bill not found")
@@ -380,9 +348,7 @@ async def list_goals(user: dict = Depends(get_current_user)) -> List[Goal]:
 
 
 @router.post("/goals", response_model=Goal)
-async def create_goal(
-    payload: GoalCreate, user: dict = Depends(get_current_user)
-) -> Goal:
+async def create_goal(payload: GoalCreate, user: dict = Depends(get_current_user)) -> Goal:
     doc = {
         "id": _uuid(),
         "user_id": user["id"],
@@ -398,15 +364,11 @@ async def create_goal(
 
 
 @router.patch("/goals/{goal_id}", response_model=Goal)
-async def update_goal(
-    goal_id: str, payload: GoalUpdate, user: dict = Depends(get_current_user)
-) -> Goal:
+async def update_goal(goal_id: str, payload: GoalUpdate, user: dict = Depends(get_current_user)) -> Goal:
     updates = {k: v for k, v in payload.model_dump().items() if v is not None}
     if not updates:
         raise HTTPException(status_code=400, detail="No changes")
-    r = await db.goals.update_one(
-        {"id": goal_id, "user_id": user["id"]}, {"$set": updates}
-    )
+    r = await db.goals.update_one({"id": goal_id, "user_id": user["id"]}, {"$set": updates})
     if r.matched_count == 0:
         raise HTTPException(status_code=404, detail="Goal not found")
     doc = await db.goals.find_one({"id": goal_id}, {"_id": 0})
@@ -414,15 +376,8 @@ async def update_goal(
 
 
 @router.post("/goals/{goal_id}/contribute", response_model=Goal)
-async def contribute_goal(
-    goal_id: str,
-    payload: GoalContribution,
-    user: dict = Depends(get_current_user),
-) -> Goal:
-    r = await db.goals.update_one(
-        {"id": goal_id, "user_id": user["id"]},
-        {"$inc": {"current_amount": float(payload.amount)}},
-    )
+async def contribute_goal(goal_id: str, payload: GoalContribution, user: dict = Depends(get_current_user)) -> Goal:
+    r = await db.goals.update_one({"id": goal_id, "user_id": user["id"]}, {"$inc": {"current_amount": float(payload.amount)}})
     if r.matched_count == 0:
         raise HTTPException(status_code=404, detail="Goal not found")
     doc = await db.goals.find_one({"id": goal_id}, {"_id": 0})
@@ -430,9 +385,7 @@ async def contribute_goal(
 
 
 @router.delete("/goals/{goal_id}")
-async def delete_goal(
-    goal_id: str, user: dict = Depends(get_current_user)
-) -> Dict[str, bool]:
+async def delete_goal(goal_id: str, user: dict = Depends(get_current_user)) -> Dict[str, bool]:
     r = await db.goals.delete_one({"id": goal_id, "user_id": user["id"]})
     if r.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Goal not found")
@@ -442,113 +395,46 @@ async def delete_goal(
 # -------------------------------- Dashboard -----------------------------------
 @router.get("/dashboard")
 async def dashboard(user: dict = Depends(get_current_user)) -> Dict[str, Any]:
-    """Aggregated dashboard payload — KPIs + charts + progress."""
+    """Aggregated dashboard payload — delegates heavy lifting to helpers."""
     base_ccy: str = user.get("base_currency", "USD") or "USD"
     today = date.today()
     month_start = today.replace(day=1).isoformat()
     six_months_ago = (today.replace(day=1) - timedelta(days=180)).isoformat()
 
-    # Pull all txns for last ~7 months once; aggregate in-Python for base currency.
     txns = await db.transactions.find(
         {"user_id": user["id"], "date": {"$gte": six_months_ago}}, {"_id": 0}
     ).to_list(5000)
 
-    # This month totals
-    month_income = 0.0
-    month_expense = 0.0
-    category_totals: Dict[str, float] = {}
-    for t in txns:
-        base_amt = convert(float(t["amount"]), t.get("currency", "USD"), base_ccy)
-        if t["date"] >= month_start:
-            if t["type"] == "income":
-                month_income += base_amt
-            else:
-                month_expense += base_amt
-                category_totals[t["category"]] = (
-                    category_totals.get(t["category"], 0.0) + base_amt
-                )
+    income, expense, category_totals = aggregate_month(txns, month_start, base_ccy)
+    net = income - expense
+    savings_rate = compute_savings_rate(income, net)
+    trend = build_trend(txns, base_ccy, today)
+    category_breakdown = build_category_breakdown(category_totals)
 
-    net = month_income - month_expense
-    savings_rate = (net / month_income * 100.0) if month_income > 0 else 0.0
-
-    # 6-month trend
-    trend_map: Dict[str, Dict[str, float]] = {}
-    for t in txns:
-        m = t["date"][:7]  # YYYY-MM
-        entry = trend_map.setdefault(m, {"income": 0.0, "expense": 0.0})
-        base_amt = convert(float(t["amount"]), t.get("currency", "USD"), base_ccy)
-        entry[t["type"] if t["type"] in ("income", "expense") else "expense"] += base_amt
-    # last 6 calendar months
-    trend: List[Dict[str, Any]] = []
-    cursor = today.replace(day=1)
-    months: List[str] = []
-    for _ in range(6):
-        months.append(cursor.strftime("%Y-%m"))
-        # go to previous month
-        prev = cursor - timedelta(days=1)
-        cursor = prev.replace(day=1)
-    for m in reversed(months):
-        d = trend_map.get(m, {"income": 0.0, "expense": 0.0})
-        trend.append(
-            {
-                "month": m,
-                "income": round(d["income"], 2),
-                "expense": round(d["expense"], 2),
-            }
-        )
-
-    # Category breakdown for the current month
-    category_breakdown = [
-        {"category": c, "amount": round(a, 2)}
-        for c, a in sorted(category_totals.items(), key=lambda kv: kv[1], reverse=True)
-    ]
-
-    # Budgets with progress
     current_month = today.strftime("%Y-%m")
     budgets = await db.budgets.find(
         {"user_id": user["id"], "month": current_month}, {"_id": 0}
     ).to_list(200)
-    budgets_with_progress = []
-    for b in budgets:
-        spent = category_totals.get(b["category"], 0.0)
-        budgets_with_progress.append(
-            {
-                **b,
-                "spent": round(spent, 2),
-                "percent": round(min(spent / b["limit"] * 100.0, 999.0), 1)
-                if b["limit"]
-                else 0.0,
-            }
-        )
+    budgets_enriched = enrich_budgets(budgets, category_totals)
 
-    # Upcoming bills (next 30 days)
     horizon = (today + timedelta(days=30)).isoformat()
-    bills = (
-        await db.bills.find(
-            {
-                "user_id": user["id"],
-                "next_due_date": {"$lte": horizon},
-            },
-            {"_id": 0},
-        )
-        .sort("next_due_date", 1)
-        .to_list(20)
-    )
+    bills = await db.bills.find(
+        {"user_id": user["id"], "next_due_date": {"$lte": horizon}}, {"_id": 0}
+    ).sort("next_due_date", 1).to_list(20)
 
-    # Goals
     goals = await db.goals.find({"user_id": user["id"]}, {"_id": 0}).to_list(50)
 
     return {
         "base_currency": base_ccy,
         "kpis": {
-            "income": round(month_income, 2),
-            "expense": round(month_expense, 2),
+            "income": round(income, 2),
+            "expense": round(expense, 2),
             "net": round(net, 2),
-            "savings_rate": round(savings_rate, 1),
+            "savings_rate": savings_rate,
         },
         "trend": trend,
         "category_breakdown": category_breakdown,
-        "budgets": budgets_with_progress,
+        "budgets": budgets_enriched,
         "upcoming_bills": bills,
         "goals": goals,
     }

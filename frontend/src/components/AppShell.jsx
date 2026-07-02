@@ -81,8 +81,8 @@ export function AppShell({ children, title, actions }) {
   const navigate = useNavigate();
   const [open, setOpen] = React.useState(false);
 
-  const doLogout = () => {
-    logout();
+  const doLogout = async () => {
+    await logout();
     navigate("/", { replace: true });
   };
 

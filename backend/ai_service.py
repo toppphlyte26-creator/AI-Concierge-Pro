@@ -1,6 +1,6 @@
-"""Gemini 2.5 Flash helpers for FinSight.
+"""Gemini 2.5 Flash helpers for FinSight (proven in /app/test_core.py).
 
-Proven via /app/test_core.py before being copied here.
+Broken into small helpers so each has low complexity.
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import os
 import re
 import uuid
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from dotenv import load_dotenv
 from emergentintegrations.llm.chat import ImageContent, LlmChat, UserMessage
@@ -103,6 +103,8 @@ RECEIPT_SYSTEM = (
 )
 
 
+# --------------------------- Public helpers ---------------------------------
+
 async def suggest_category(description: str) -> str:
     """Return a normalized category label for the given transaction description."""
     if not EMERGENT_LLM_KEY:
@@ -120,10 +122,22 @@ async def suggest_category(description: str) -> str:
 
 
 async def extract_receipt(image_bytes: bytes) -> Dict[str, Any]:
-    """Given raw image bytes, extract receipt fields as a normalized dict."""
+    """Public API — given raw image bytes, return normalized receipt dict."""
     if not EMERGENT_LLM_KEY:
         logger.warning("EMERGENT_LLM_KEY not set; returning empty extraction")
         return _empty_receipt()
+    raw = await _call_receipt_model(image_bytes)
+    if raw is None:
+        return _empty_receipt()
+    data = _parse_receipt_response(raw)
+    if data is None:
+        return _empty_receipt()
+    return _normalize_receipt(data)
+
+
+# --------------------------- Internal helpers -------------------------------
+
+async def _call_receipt_model(image_bytes: bytes) -> str | None:
     try:
         b64 = base64.b64encode(image_bytes).decode("utf-8")
         chat = _new_chat(RECEIPT_SYSTEM)
@@ -133,32 +147,55 @@ async def extract_receipt(image_bytes: bytes) -> Dict[str, Any]:
                 file_contents=[ImageContent(image_base64=b64)],
             )
         )
-        data = _extract_json(str(resp))
+        return str(resp)
     except Exception as e:
-        logger.exception("extract_receipt failed: %s", e)
-        return _empty_receipt()
+        logger.exception("_call_receipt_model failed: %s", e)
+        return None
 
-    # Normalize / defaults
-    out = _empty_receipt()
-    out["merchant"] = str(data.get("merchant") or "")
+
+def _parse_receipt_response(text: str) -> Dict[str, Any] | None:
     try:
-        out["total_amount"] = float(data.get("total_amount") or 0)
+        return _extract_json(text)
+    except Exception as e:
+        logger.exception("_parse_receipt_response failed: %s", e)
+        return None
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        return float(value or 0)
     except (TypeError, ValueError):
-        out["total_amount"] = 0.0
-    out["currency"] = (str(data.get("currency") or "USD")).upper()[:3] or "USD"
-    out["date"] = str(data.get("date") or "")
-    out["category"] = _normalize_category(str(data.get("category") or ""))
-    items = data.get("items") or []
-    if isinstance(items, list):
-        out["items"] = [
-            {
-                "name": str(i.get("name", "")),
-                "price": float(i.get("price", 0) or 0),
-            }
-            for i in items
-            if isinstance(i, dict)
-        ]
-    return out
+        return 0.0
+
+
+def _normalize_items(raw_items: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw_items, list):
+        return []
+    result: List[Dict[str, Any]] = []
+    for i in raw_items:
+        if not isinstance(i, dict):
+            continue
+        result.append({
+            "name": str(i.get("name", "")),
+            "price": _safe_float(i.get("price", 0)),
+        })
+    return result
+
+
+def _normalize_currency(raw: Any) -> str:
+    ccy = (str(raw or "USD")).upper()[:3]
+    return ccy or "USD"
+
+
+def _normalize_receipt(data: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "merchant": str(data.get("merchant") or ""),
+        "total_amount": _safe_float(data.get("total_amount")),
+        "currency": _normalize_currency(data.get("currency")),
+        "date": str(data.get("date") or ""),
+        "category": _normalize_category(str(data.get("category") or "")),
+        "items": _normalize_items(data.get("items")),
+    }
 
 
 def _empty_receipt() -> Dict[str, Any]:

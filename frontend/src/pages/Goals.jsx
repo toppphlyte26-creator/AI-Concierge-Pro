@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { Plus, Target, Trash2, PlusCircle } from "lucide-react";
@@ -37,6 +37,17 @@ const empty = {
   target_date: "",
 };
 
+function GoalDateLine({ targetDate }) {
+  if (!targetDate) return null;
+  const days = daysUntil(targetDate);
+  const suffix = days !== null ? ` • ${days}d left` : "";
+  return (
+    <div className="text-xs text-muted-foreground mt-0.5">
+      By {formatDate(targetDate)}{suffix}
+    </div>
+  );
+}
+
 export default function Goals() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -45,14 +56,14 @@ export default function Goals() {
   const [contribGoal, setContribGoal] = useState(null);
   const [contribAmount, setContribAmount] = useState("");
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const { data } = await api.get("/goals");
       setItems(data);
     } finally { setLoading(false); }
-  };
-  useEffect(() => { load(); }, []);
+  }, []);
+  useEffect(() => { load(); }, [load]);
 
   const add = async () => {
     if (!form.name || !form.target_amount) return toast.error("Name and target required");
@@ -75,7 +86,7 @@ export default function Goals() {
       await api.post(`/goals/${contribGoal.id}/contribute`, { amount: amt });
       toast.success("Contribution added");
       setContribGoal(null); setContribAmount(""); load();
-    } catch (e) { toast.error("Failed"); }
+    } catch { toast.error("Failed"); }
   };
 
   const remove = async (id) => {
@@ -145,16 +156,13 @@ export default function Goals() {
           className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4" data-testid="goals-grid">
           {items.map(g => {
             const pct = Math.min((g.current_amount / g.target_amount) * 100, 100);
-            const days = daysUntil(g.target_date);
             return (
               <Card key={g.id} className="bg-card/80 border-border card-shadow">
                 <CardContent className="p-5">
                   <div className="flex items-start justify-between">
                     <div>
                       <div className="font-display font-semibold">{g.name}</div>
-                      {g.target_date && (
-                        <div className="text-xs text-muted-foreground mt-0.5">By {formatDate(g.target_date)}{days !== null ? ` • ${days}d left` : ""}</div>
-                      )}
+                      <GoalDateLine targetDate={g.target_date} />
                     </div>
                     <Button variant="ghost" size="icon" onClick={() => remove(g.id)}
                       className="h-7 w-7 text-muted-foreground hover:text-rose-400" data-testid={`goal-delete-${g.id}`}>

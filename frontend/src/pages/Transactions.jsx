@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
-import { Plus, Trash2, Pencil, ScanLine, Receipt } from "lucide-react";
+import { Plus, Trash2, Pencil, ScanLine, Receipt, MoreHorizontal } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,7 +28,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { MoreHorizontal } from "lucide-react";
 import { CATEGORIES, CURRENCIES, categoryColor } from "@/lib/constants";
 import { api } from "@/lib/api";
 import { formatDate } from "@/lib/format";
@@ -36,6 +35,7 @@ import { Num } from "@/components/Num";
 import { TransactionModal } from "@/components/TransactionModal";
 import { EmptyState } from "@/components/EmptyState";
 import { useNavigate } from "react-router-dom";
+import { txAmountToneClass, txTypeBadgeClass } from "@/lib/ui-status";
 
 export default function Transactions() {
   const navigate = useNavigate();
@@ -48,7 +48,7 @@ export default function Transactions() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const params = {};
@@ -60,8 +60,9 @@ export default function Transactions() {
     } finally {
       setLoading(false);
     }
-  };
-  useEffect(() => { load(); }, [category, currency, type]);
+  }, [category, currency, type]);
+
+  useEffect(() => { load(); }, [load]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -78,7 +79,7 @@ export default function Transactions() {
       await api.delete(`/transactions/${id}`);
       toast.success("Transaction deleted");
       load();
-    } catch (e) {
+    } catch {
       toast.error("Delete failed");
     }
   };
@@ -171,13 +172,13 @@ export default function Transactions() {
                           </Badge>
                         </TableCell>
                         <TableCell className="text-right">
-                          <div className={t.type === 'income' ? 'text-emerald-400 num' : 'num'}>
+                          <div className={`num ${txAmountToneClass(t.type)}`}>
                             <Num value={t.amount} currency={t.currency} showPlus={t.type === 'income'} />
                           </div>
                           <div className="text-[10px] text-muted-foreground num">{t.currency}</div>
                         </TableCell>
                         <TableCell>
-                          <Badge variant="outline" className={t.type === 'income' ? 'text-emerald-400 border-emerald-400/40' : 'text-rose-400 border-rose-400/40'}>
+                          <Badge variant="outline" className={txTypeBadgeClass(t.type)}>
                             {t.type}
                           </Badge>
                         </TableCell>
