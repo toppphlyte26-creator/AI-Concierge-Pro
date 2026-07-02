@@ -20,8 +20,8 @@ export function TrendChart({ data, currency = "USD" }) {
     );
   }
   return (
-    <div className="h-[280px]">
-      <ResponsiveContainer width="100%" height="100%">
+    <div className="h-[280px] min-w-[240px]">
+      <ResponsiveContainer width="100%" height="100%" minWidth={240} minHeight={240}>
         <BarChart data={data} margin={{ top: 12, right: 12, left: 0, bottom: 0 }}>
           <CartesianGrid stroke="hsla(220, 18%, 26%, 0.55)" strokeDasharray="3 3" vertical={false} />
           <XAxis
