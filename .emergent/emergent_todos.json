@@ -1,0 +1,38 @@
+[
+  {
+    "content": "Phase 1: Get Gemini integration playbook & Emergent LLM key",
+    "status": "completed"
+  },
+  {
+    "content": "Phase 1: Find/generate a receipt image for POC",
+    "status": "completed"
+  },
+  {
+    "content": "Phase 1: Write /app/test_core.py covering (a) text auto-categorize and (b) receipt vision extraction",
+    "status": "completed"
+  },
+  {
+    "content": "Phase 1: Run test_core.py and iterate until BOTH tests pass",
+    "status": "completed"
+  },
+  {
+    "content": "Phase 2: design_agent for modern fintech dark UI guidelines",
+    "status": "in_progress"
+  },
+  {
+    "content": "Phase 2: Install backend + frontend deps in parallel",
+    "status": "pending"
+  },
+  {
+    "content": "Phase 2: Build backend (auth, models, ai_service, routes, seed, currency)",
+    "status": "pending"
+  },
+  {
+    "content": "Phase 2: Build frontend (auth ctx, pages, components, charts) - modern fintech dark",
+    "status": "pending"
+  },
+  {
+    "content": "Phase 2: End to End Testing using Testing Agent",
+    "status": "pending"
+  }
+]
