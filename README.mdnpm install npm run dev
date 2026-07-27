@@ -8,3 +8,11 @@ git commit -m "Initial production release"
 git remote add origin https://github.com/YOUR_USERNAME/AI-Concierge-Pro.git
 git branch -M main
 git push -u origin main
+DATABASE_URL
+AUTH_SECRET
+AUTH_URL
+OPENAI_API_KEY
+STRIPE_SECRET_KEY
+NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
+STRIPE_WEBHOOK_SECRET
+RESEND_API_KEY
