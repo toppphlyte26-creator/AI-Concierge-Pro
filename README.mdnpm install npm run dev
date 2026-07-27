@@ -18,3 +18,4 @@ STRIPE_WEBHOOK_SECRET
 RESEND_API_KEY
 AUTH_URL=https://YOUR-PROJECT.vercel.app
 https://ai-concierge-pro.vercel.app
+AUTH_URL=https://yourdomain.com
