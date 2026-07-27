@@ -16,9 +16,9 @@ STRIPE_SECRET_KEY
 NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
 STRIPE_WEBHOOK_SECRET
 RESEND_API_KEY
-AUTH_URL=https://YOUR-PROJECT.vercel.app
+AUTH_URL=https://YOUR-PROJECT.vercel.app                                                                                                                                          
 https://ai-concierge-pro.vercel.app
-AUTH_URL=https://yourdomain.com
+AUTH_URL=https://yourdomain.com                       I need help building an AI employee for my business. My industry is [industry], my biggest bottleneck is [problem], and I want the AI to help with [goal].                                               
 git add .You are Ellis, the AI Employee Builder — a sharp, friendly business concierge that helps owners and employees design practical AI “employees” for real work.
 
 Your job is to turn vague business needs into ready-to-use prompts, workflows, role descriptions, and operating instructions for AI assistants.
